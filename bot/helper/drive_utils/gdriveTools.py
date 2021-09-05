@@ -3,6 +3,7 @@ import pickle
 
 import requests
 import logging
+
 from telegraph import Telegraph
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -11,7 +12,7 @@ from googleapiclient.errors import HttpError
 
 from telegram import InlineKeyboardMarkup
 from bot.helper.telegram_helper import button_builder
-from bot import DRIVE_NAME, DRIVE_ID, INDEX_URL, telegraph_token
+from bot import DRIVE_NAME, DRIVE_ID, INDEX_URL, telegraph_token, TELEGRAPH_CHANGES, BOT_SOURCE_CODE
 
 LOGGER = logging.getLogger(__name__)
 logging.getLogger('googleapiclient.discovery').setLevel(logging.ERROR)
@@ -41,7 +42,6 @@ class GoogleDriveHelper:
         except IndexError:
             return 'File too large'
 
-
     def authorize(self):
         # Get credentials
         credentials = None
@@ -62,53 +62,30 @@ class GoogleDriveHelper:
                 pickle.dump(credentials, token)
         return build('drive', 'v3', credentials=credentials, cache_discovery=False)
 
-    def get_recursive_list(self, file, rootid = "root"):
-        rtnlist = []
-        if not rootid:
-            rootid = file.get('teamDriveId')
-        if rootid == "root":
-            rootid = self.__service.files().get(fileId = 'root', fields="id").execute().get('id')
-        x = file.get("name")
-        y = file.get("id")
-        while(y != rootid):
-            rtnlist.append(x)
-            file = self.__service.files().get(
-                                            fileId=file.get("parents")[0],
-                                            supportsAllDrives=True,
-                                            fields='id, name, parents'
-                                            ).execute()
-            x = file.get("name")
-            y = file.get("id")
-        rtnlist.reverse()
-        return rtnlist
-
+    def escapes(self, str):
+        chars = ['\\', "'", '"', r'\a', r'\b', r'\f', r'\n', r'\r', r'\t']
+        for char in chars:
+            str = str.replace(char, '\\'+char)
+        return str
+    
     def drive_query(self, parent_id, fileName):
-        query = f"name contains '{fileName}' and trashed=false"
+        fileName = self.escapes(str(fileName))
+        gquery = " and ".join(f"name contains '{x}'" for x in fileName.split())
+        query = f"'{parent_id}' in parents and ({gquery})"
         return (
             self.__service.files()
             .list(
                 supportsTeamDrives=True,
                 includeTeamDriveItems=True,
-                teamDriveId=parent_id,
                 q=query,
-                corpora='drive',
                 spaces='drive',
                 pageSize=200,
-                fields='files(id, name, mimeType, size, teamDriveId, parents)',
-                orderBy='folder, modifiedTime desc',
-            )
-            .execute()["files"]
-            if parent_id != "root"
-            else self.__service.files()
-            .list(
-                q=query + " and 'me' in owners",
-                pageSize=200,
-                spaces='drive',
-                fields='files(id, name, mimeType, size, parents)',
-                orderBy='folder, modifiedTime desc',
+                fields='files(id, name, mimeType, size)',
+                orderBy='modifiedTime desc',
             )
             .execute()["files"]
         )
+
 
     def edit_telegraph(self):
         nxt_page = 1 
@@ -124,14 +101,16 @@ class GoogleDriveHelper:
                 if nxt_page < self.num_of_path:
                     content += f'<b> | <a href="https://telegra.ph/{self.path[nxt_page]}">Next</a></b>'
                     nxt_page += 1
-            telegra_ph.edit_page(path = self.path[prev_page],
-                                 title = 'Drive Search',
-                                 author_name='drive-searchbot',
-                                 author_url='https://github.com/breakdowns/drive-searchbot',
+            Telegraph(access_token=telegraph_token).edit_page(path = self.path[prev_page],
+                                 title = TELEGRAPH_CHANGES + ' ' + 'Bot',
+                                 author_name=TELEGRAPH_CHANGES + ' ' + 'Search Bot',
+                                 author_url=BOT_SOURCE_CODE,
                                  html_content=content)
         return
 
+    
     def drive_list(self, fileName):
+        fileName = self.escapes(str(fileName))
         msg = ''
         content_count = 0
         add_title_msg = True
@@ -139,26 +118,28 @@ class GoogleDriveHelper:
             response = self.drive_query(parent_id, fileName)
             if response:
                 if add_title_msg:
-                    msg = f'<h3>Search Results for: {fileName}</h3><br>drive-searchbot<br><br>'
+                    msg = f'<h3>Search Results for : {fileName}</h3>'
                     add_title_msg = False
-                msg += f"╾────────────╼<br><b>{DRIVE_NAME[INDEX]}</b><br>╾────────────╼<br>"
+                msg += f"————————————<br><b>{DRIVE_NAME[INDEX]}</b><br>————————————<br>"
                 for file in response:
                     if file.get('mimeType') == "application/vnd.google-apps.folder":  # Detect Whether Current Entity is a Folder or File.
-                        msg += f"📁 <code>{file.get('name')}</code> <b>(folder)</b><br>" \
-                               f"<b><a href='https://drive.google.com/drive/folders/{file.get('id')}'>Drive Link</a></b>"
+                        furl = f"https://drive.google.com/drive/folders/{file.get('id')}"
+                        msg += f"📁 <code>{file.get('name')}<br>(folder)</code><br>"
+                        msg += f"<b><a href={furl}>Drive Link</a></b>"
                         if INDEX_URL[INDEX] is not None:
-                            url_path = "/".join(
-                                requests.utils.quote(n, safe='')
-                                for n in self.get_recursive_list(file, parent_id)
-                            )
-
+                            url_path = requests.utils.quote(f'{file.get("name")}')
                             url = f'{INDEX_URL[INDEX]}/{url_path}/'
-                            msg += f'<b> | <a href="{url}">Index Link</a></b>'
+                            msg += f' <b>| <a href="{url}">Index Link</a></b>'
+                    elif file.get('mimeType') == 'application/vnd.google-apps.shortcut':
+                        msg += f"⁍<a href='https://drive.google.com/drive/folders/{file.get('id')}'>{file.get('name')}" \
+                        f"</a> (shortcut)"
+                        # Excluded index link as indexes cant download or open these shortcuts
                     else:
-                        msg += f"📄 <code>{file.get('name')}</code> <b>({self.get_readable_file_size(file.get('size'))})</b><br>" \
-                               f"<b><a href='https://drive.google.com/uc?id={file.get('id')}&export=download'>Drive Link</a></b>"
+                        furl = f"https://drive.google.com/uc?id={file.get('id')}&export=download"
+                        msg += f"📄 <code>{file.get('name')}<br>({self.get_readable_file_size(file.get('size'))})</code><br>" \
+                        f"<b><a href={furl}>Drive Link</a></b>"
                         if INDEX_URL[INDEX] is not None:
-                            url_path = "/".join([requests.utils.quote(n, safe ='') for n in self.get_recursive_list(file, parent_id)])
+                            url_path = requests.utils.quote(f'{file.get("name")}')
                             url = f'{INDEX_URL[INDEX]}/{url_path}'
                             msg += f'<b> | <a href="{url}">Index Link</a></b>'
                     msg += '<br><br>'
@@ -166,28 +147,26 @@ class GoogleDriveHelper:
                     if content_count == TELEGRAPHLIMIT :
                        self.telegraph_content.append(msg)
                        msg = ""
-                       content_count = 0
 
         if msg != '':
             self.telegraph_content.append(msg)
 
         if len(self.telegraph_content) == 0:
-            return "No Result Found :(", None
+            return "No Result Found ❌", None
 
         for content in self.telegraph_content :
             self.path.append(Telegraph(access_token=telegraph_token).create_page(
-                                                    title = 'Drive Search',
-                                                    author_name='drive-searchbot',
-                                                    author_url='https://github.com/breakdowns/drive-searchbot',
-                                                    html_content=content
-                                                    )['path'])
+                                                title = TELEGRAPH_CHANGES + ' ' + 'Bot',
+                                                author_name=TELEGRAPH_CHANGES + ' ' + 'Search Bot',
+                                                author_url=BOT_SOURCE_CODE,
+                                                html_content=content )['path'])
 
         self.num_of_path = len(self.path)
         if self.num_of_path > 1:
             self.edit_telegraph()
 
-        msg = f"<b>Search Results For</b> <code>{fileName}</code>"
+        msg = f"<b>Found {content_count} results for <i>{fileName}</i></b>"
         buttons = button_builder.ButtonMaker()
-        buttons.buildbutton("VIEW", f"https://telegra.ph/{self.path[0]}")
+        buttons.buildbutton("🔎 VIEW", f"https://telegra.ph/{self.path[0]}")
 
         return msg, InlineKeyboardMarkup(buttons.build_menu(1))
