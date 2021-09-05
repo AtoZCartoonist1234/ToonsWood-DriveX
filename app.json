@@ -7,9 +7,9 @@
       "telegram",
       "python"
     ],
-    "repository": "https://github.com/breakdowns/drive-searchbot",
-    "website": "https://github.com/breakdowns",
-    "success_url": "https://t.me/SlamDevs",
+    "repository": "https://github.com/vivekdarji00/ToonsWood-DriveX",
+    "website": "https://www.toonswood.co",
+    "success_url": "https://t.me/thetoonswood",
     "stack": "container",
     "env": {
       "BOT_TOKEN": {
@@ -30,7 +30,7 @@
       },
       "DRIVE_FOLDER_URL": {
         "description": "(Optional) Only if you want to load your drive_folder externally from an index link. Fill this with the direct link of that file.",
-        "required": true
+        "required": false
       }
     },
     "addons": [
